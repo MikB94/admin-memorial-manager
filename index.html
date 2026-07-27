@@ -396,7 +396,7 @@ const SyncManager={
     }finally{clearTimeout(timer)}
   },
 
-  async waitForLoadIdle(timeoutMs=3500){
+  async waitForLoadIdle(timeoutMs=1200){
     if(!this.isLoading)return;
     if(this.loadPromise){
       try{await this.withTimeout(this.loadPromise,timeoutMs,'Caricamento online troppo lento')}
@@ -405,7 +405,7 @@ const SyncManager={
         this.loadGeneration++;
         this.isLoading=false;
         this.loadPromise=null;
-        this.setBadge('Modalità locale');
+        this.setBadge('Caricamento interrotto');
       }
       return;
     }
@@ -442,8 +442,8 @@ const SyncManager={
           data:payload,
           updated_at:payload.updatedAt
         },{onConflict:'id'}),
-        10000,
-        'Timeout durante il salvataggio online'
+        30000,
+        'Supabase non ha risposto durante il salvataggio'
       );
       if(error)throw error;
 
@@ -482,7 +482,7 @@ const SyncManager={
           .select('data,updated_at')
           .eq('id',ADMIN_STATE_ID)
           .maybeSingle();
-        const {data,error}=await this.withTimeout(request,8000,'Connessione a Supabase troppo lenta');
+        const {data,error}=await this.withTimeout(request,30000,'Supabase non ha risposto entro 30 secondi');
         if(error)throw error;
         if(generation!==this.loadGeneration)return false;
 
@@ -513,7 +513,7 @@ const SyncManager={
         return true;
       }catch(error){
         if(generation===this.loadGeneration){
-          this.setBadge('Modalità locale');
+          this.setBadge('Caricamento interrotto');
           toast('Caricamento online non riuscito: '+error.message+'. Puoi comunque salvare e pubblicare.');
         }
         return false;
@@ -553,8 +553,8 @@ const SyncManager={
           data:payload,
           updated_at:payload.updatedAt
         },{onConflict:'id'}),
-        10000,
-        'Timeout durante la pubblicazione online'
+        30000,
+        'Supabase non ha risposto durante la pubblicazione'
       );
       if(error)throw error;
 
@@ -585,29 +585,30 @@ publishOnline=async function(){
   await SyncManager.publish();
 };
 
-const submitLoginBeforeSync=submitLogin;
-submitLogin=async function(event){
-  await submitLoginBeforeSync(event);
+let syncBooted=false;
+async function bootOnlineProject(){
+  if(syncBooted)return;
+  syncBooted=true;
   const session=await SyncManager.getSession();
   if(session)await SyncManager.loadOnce();
-};
+}
 
-let authLoadHandled=false;
 supabaseClient.auth.onAuthStateChange((event,session)=>{
-  if(event==='SIGNED_IN'&&session&&!authLoadHandled){
-    authLoadHandled=true;
-    setTimeout(()=>SyncManager.loadOnce(),0);
+  if(event==='SIGNED_IN'&&session){
+    setTimeout(()=>{
+      SyncManager.initialized=false;
+      SyncManager.loadOnce({force:true});
+    },0);
   }
   if(event==='SIGNED_OUT'){
-    authLoadHandled=false;
     SyncManager.initialized=false;
+    SyncManager.loadGeneration++;
+    SyncManager.isLoading=false;
+    SyncManager.loadPromise=null;
   }
 });
 
-setTimeout(async()=>{
-  const session=await SyncManager.getSession();
-  if(session&&!SyncManager.initialized){authLoadHandled=true;await SyncManager.loadOnce()}
-},900);
+setTimeout(bootOnlineProject,1200);
 </script>
 
 </body>
