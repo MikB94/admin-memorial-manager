@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
   Memorial Manager
-  Versione 1.0.0
+  Versione 1.1.0
 
   Software progettato e sviluppato da Michele Basilici.
   © 2026 Michele Basilici. Tutti i diritti riservati.
@@ -78,7 +78,7 @@ body{background:radial-gradient(circle at 12% 0,rgba(33,89,170,.20),transparent 
     <button class="btn ghost" onclick="document.getElementById('openProject').click()">APRI PROGETTO</button>
     <input id="openProject" class="file" type="file" accept="application/json,.json">
   </div>
-  <div class="admin-signature">Memorial Manager v1.0.0<br>© 2026 <a href="https://www.linkedin.com/in/michele-basilici-98a353269/" target="_blank" rel="noopener noreferrer">Michele Basilici</a></div>
+  <div class="admin-signature">Memorial Manager v1.1.0<br>© 2026 <a href="https://www.linkedin.com/in/michele-basilici-98a353269/" target="_blank" rel="noopener noreferrer">Michele Basilici</a></div>
 </aside>
 <section class="content">
 <header class="topbar">
@@ -210,7 +210,7 @@ function renderAbout(){document.getElementById('page-about').innerHTML=`
       <div class="about-mark">MM</div>
       <div class="about-kicker">Piattaforma di gestione tornei</div>
       <h2>Memorial Manager</h2>
-      <div class="about-version">Versione 1.0.0</div>
+      <div class="about-version">Versione 1.1.0</div>
       <div class="about-divider"></div>
       <p>Software progettato e sviluppato da</p>
       <a class="about-author" href="https://www.linkedin.com/in/michele-basilici-98a353269/" target="_blank" rel="noopener noreferrer">Michele Basilici</a>
@@ -341,106 +341,212 @@ showPage=function(id){originalShowPage(id);renderNav();const fp=document.getElem
 setTimeout(()=>{renderNav();updateAdminSyncUI();if(currentPage==='dashboard'){renderDashboard();const fp=document.getElementById('mobilePublish');if(fp)fp.style.display='none'}},500);
 </script>
 
-<script id="adminCloudProjectV1">
+<script id="adminCloudProjectV2">
 const ADMIN_STATE_ID='admin_state';
-let adminCloudLoading=false;
-let adminCloudSaveTimer=null;
-let adminCloudReady=false;
+const LIVE_STATE_ID='live_state';
+const ADMIN_AUTOSAVE_DELAY=800;
 
-function hasMeaningfulProject(s){
-  if(!s)return false;
-  if(Array.isArray(s.matches)&&s.matches.length)return true;
-  if(Array.isArray(s.teams)&&s.teams.some((t,i)=>t.group||t.slot!==null||t.img||t.name!==('Squadra '+String(i+1).padStart(2,'0'))))return true;
-  return false;
-}
+const SyncManager={
+  isLoading:false,
+  isSaving:false,
+  isPublishing:false,
+  initialized:false,
+  saveTimer:null,
+  saveQueued:false,
+  lastSavedAt:null,
 
-async function saveAdminProjectOnline({silent=false}={}){
-  if(adminCloudLoading)return false;
-  const {data:{session}}=await supabaseClient.auth.getSession();
-  if(!session)return false;
-  const payload=JSON.parse(JSON.stringify(state));
-  payload.updatedAt=new Date().toISOString();
-  const {error}=await supabaseClient.from('tournament_state').upsert({
-    id:ADMIN_STATE_ID,
-    data:payload,
-    updated_at:payload.updatedAt
-  },{onConflict:'id'});
-  if(error){
-    if(!silent)toast('Errore salvataggio progetto online: '+error.message);
+  setBadge(text){
+    const badge=document.getElementById('saveState');
+    if(badge)badge.textContent=text;
+  },
+
+  cloneState(){
+    const payload=JSON.parse(JSON.stringify(state));
+    payload.updatedAt=new Date().toISOString();
+    return payload;
+  },
+
+  hasMeaningfulProject(s){
+    if(!s)return false;
+    if(Array.isArray(s.matches)&&s.matches.length)return true;
+    if(Array.isArray(s.teams)&&s.teams.some((t,i)=>t.group||t.slot!==null||t.img||t.name!==('Squadra '+String(i+1).padStart(2,'0'))))return true;
     return false;
-  }
-  adminCloudReady=true;
-  const badge=document.getElementById('saveState');
-  if(badge){badge.textContent='Progetto online salvato';setTimeout(()=>badge.textContent='Salvataggio automatico',1400)}
-  return true;
-}
+  },
 
-function scheduleAdminProjectSave(){
-  clearTimeout(adminCloudSaveTimer);
-  adminCloudSaveTimer=setTimeout(()=>saveAdminProjectOnline({silent:true}),700);
-}
+  parseTime(value){
+    const n=Date.parse(value||'');
+    return Number.isFinite(n)?n:0;
+  },
 
-async function loadAdminProjectOnline(){
-  const {data:{session}}=await supabaseClient.auth.getSession();
-  if(!session)return false;
-  const {data,error}=await supabaseClient.from('tournament_state')
-    .select('data,updated_at')
-    .eq('id',ADMIN_STATE_ID)
-    .maybeSingle();
-  if(error){toast('Impossibile caricare il progetto online: '+error.message);return false}
-  if(data&&data.data){
+  async getSession(){
+    const {data:{session}}=await supabaseClient.auth.getSession();
+    return session;
+  },
+
+  scheduleSave(){
+    if(this.isLoading||this.isPublishing)return;
+    clearTimeout(this.saveTimer);
+    this.saveTimer=setTimeout(()=>this.saveNow({silent:true}),ADMIN_AUTOSAVE_DELAY);
+  },
+
+  async saveNow({silent=false}={}){
+    if(this.isLoading)return false;
+    const session=await this.getSession();
+    if(!session)return false;
+    if(this.isSaving){this.saveQueued=true;return false}
+
+    this.isSaving=true;
+    this.setBadge('Salvataggio online…');
     try{
-      adminCloudLoading=true;
-      state=normalize(data.data);
+      const payload=this.cloneState();
+      const {error}=await supabaseClient.from('tournament_state').upsert({
+        id:ADMIN_STATE_ID,
+        data:payload,
+        updated_at:payload.updatedAt
+      },{onConflict:'id'});
+      if(error)throw error;
+
+      state.updatedAt=payload.updatedAt;
       await dbSave();
-      renderAll();
-      adminDirty=false;
-      adminCloudReady=true;
-      updateAdminSyncUI();
-      toast('Progetto online caricato');
+      this.lastSavedAt=payload.updatedAt;
+      this.initialized=true;
+      this.setBadge('Progetto online salvato');
+      setTimeout(()=>this.setBadge('Salvataggio automatico'),1300);
       return true;
-    }catch(e){
-      toast('Il progetto online non è valido.');
+    }catch(error){
+      this.setBadge('Errore salvataggio');
+      if(!silent)toast('Errore salvataggio progetto online: '+error.message);
       return false;
-    }finally{adminCloudLoading=false}
-  }
-  if(hasMeaningfulProject(state)){
-    const ok=await saveAdminProjectOnline({silent:false});
-    if(ok)toast('Progetto inizializzato online');
-    return ok;
-  }
-  toast('Progetto online non ancora inizializzato. Apri prima l’admin dal dispositivo dove hai già il torneo.');
-  return false;
-}
+    }finally{
+      this.isSaving=false;
+      if(this.saveQueued){this.saveQueued=false;setTimeout(()=>this.saveNow({silent:true}),0)}
+    }
+  },
 
-const persistBeforeCloud=persist;
+  async loadOnce({force=false}={}){
+    if(this.initialized&&!force)return true;
+    if(this.isLoading||this.isSaving||this.isPublishing)return false;
+    const session=await this.getSession();
+    if(!session)return false;
+
+    this.isLoading=true;
+    this.setBadge('Caricamento progetto…');
+    try{
+      const {data,error}=await supabaseClient.from('tournament_state')
+        .select('data,updated_at')
+        .eq('id',ADMIN_STATE_ID)
+        .maybeSingle();
+      if(error)throw error;
+
+      if(data&&data.data){
+        const cloud=normalize(data.data);
+        const cloudTime=this.parseTime(data.data.updatedAt||data.updated_at);
+        const localTime=this.parseTime(state.updatedAt);
+
+        if(force||cloudTime>=localTime||!this.hasMeaningfulProject(state)){
+          state=cloud;
+          state.updatedAt=data.data.updatedAt||data.updated_at||new Date().toISOString();
+          await dbSave();
+          renderAll();
+          adminDirty=false;
+          updateAdminSyncUI();
+          toast('Progetto online caricato');
+        }else{
+          await this.saveNow({silent:false});
+          toast('Mantenuta la versione locale più recente');
+        }
+      }else if(this.hasMeaningfulProject(state)){
+        await this.saveNow({silent:false});
+        toast('Progetto inizializzato online');
+      }else{
+        toast('Progetto online non ancora inizializzato.');
+      }
+
+      this.initialized=true;
+      this.setBadge('Salvataggio automatico');
+      return true;
+    }catch(error){
+      this.setBadge('Errore caricamento');
+      toast('Impossibile caricare il progetto online: '+error.message);
+      return false;
+    }finally{
+      this.isLoading=false;
+    }
+  },
+
+  async publish(){
+    if(this.isPublishing)return;
+    const session=await this.getSession();
+    if(!session){toast('Accedi per pubblicare online');openAuthModal();return}
+
+    clearTimeout(this.saveTimer);
+    this.isPublishing=true;
+    this.setBadge('Pubblicazione…');
+    const buttons=[...document.querySelectorAll('[onclick="publishOnline()"]')];
+    buttons.forEach(b=>b.disabled=true);
+    try{
+      const saved=await this.saveNow({silent:false});
+      if(!saved)throw new Error('Salvataggio del progetto non riuscito');
+
+      const payload=this.cloneState();
+      payload.teams=(payload.teams||[]).map(t=>({...t,img:''}));
+      const bytes=new Blob([JSON.stringify(payload)]).size;
+      const {error}=await supabaseClient.from('tournament_state').upsert({
+        id:LIVE_STATE_ID,
+        data:payload,
+        updated_at:payload.updatedAt
+      },{onConflict:'id'});
+      if(error)throw error;
+
+      adminDirty=false;
+      adminLastPublish=new Date().toLocaleTimeString('it-IT',{hour:'2-digit',minute:'2-digit'});
+      updateAdminSyncUI();
+      if(currentPage==='dashboard')renderDashboard();
+      this.setBadge('Pubblicato online');
+      toast('Aggiornamento pubblicato · '+Math.max(1,Math.round(bytes/1024))+' KB');
+      setTimeout(()=>this.setBadge('Salvataggio automatico'),1500);
+    }catch(error){
+      this.setBadge('Errore pubblicazione');
+      toast('Errore pubblicazione: '+error.message);
+    }finally{
+      this.isPublishing=false;
+      buttons.forEach(b=>b.disabled=false);
+    }
+  }
+};
+
+const persistBeforeSync=persist;
 persist=async function(msg='Salvato'){
-  await persistBeforeCloud(msg);
-  if(!adminCloudLoading)scheduleAdminProjectSave();
+  await persistBeforeSync(msg);
+  SyncManager.scheduleSave();
 };
 
-const submitLoginBeforeCloud=submitLogin;
-submitLogin=async function(event){
-  await submitLoginBeforeCloud(event);
-  const {data:{session}}=await supabaseClient.auth.getSession();
-  if(session)await loadAdminProjectOnline();
-};
-
-const publishBeforeCloud=publishOnline;
 publishOnline=async function(){
-  const {data:{session}}=await supabaseClient.auth.getSession();
-  if(!session){toast('Accedi per pubblicare online');openAuthModal();return}
-  await saveAdminProjectOnline({silent:true});
-  await publishBeforeCloud();
+  await SyncManager.publish();
 };
 
+const submitLoginBeforeSync=submitLogin;
+submitLogin=async function(event){
+  await submitLoginBeforeSync(event);
+  const session=await SyncManager.getSession();
+  if(session)await SyncManager.loadOnce();
+};
+
+let authLoadHandled=false;
 supabaseClient.auth.onAuthStateChange((event,session)=>{
-  if(event==='SIGNED_IN'&&session)setTimeout(loadAdminProjectOnline,100);
+  if(event==='SIGNED_IN'&&session&&!authLoadHandled){
+    authLoadHandled=true;
+    setTimeout(()=>SyncManager.loadOnce(),0);
+  }
+  if(event==='SIGNED_OUT'){
+    authLoadHandled=false;
+    SyncManager.initialized=false;
+  }
 });
 
 setTimeout(async()=>{
-  const {data:{session}}=await supabaseClient.auth.getSession();
-  if(session)await loadAdminProjectOnline();
+  const session=await SyncManager.getSession();
+  if(session&&!SyncManager.initialized){authLoadHandled=true;await SyncManager.loadOnce()}
 },900);
 </script>
 
