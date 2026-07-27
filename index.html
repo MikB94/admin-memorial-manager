@@ -1,7 +1,7 @@
 <!doctype html>
 <!--
   Memorial Manager
-  Versione 1.1.0
+  Versione 1.1.1
 
   Software progettato e sviluppato da Michele Basilici.
   © 2026 Michele Basilici. Tutti i diritti riservati.
@@ -78,7 +78,7 @@ body{background:radial-gradient(circle at 12% 0,rgba(33,89,170,.20),transparent 
     <button class="btn ghost" onclick="document.getElementById('openProject').click()">APRI PROGETTO</button>
     <input id="openProject" class="file" type="file" accept="application/json,.json">
   </div>
-  <div class="admin-signature">Memorial Manager v1.1.0<br>© 2026 <a href="https://www.linkedin.com/in/michele-basilici-98a353269/" target="_blank" rel="noopener noreferrer">Michele Basilici</a></div>
+  <div class="admin-signature">Memorial Manager v1.1.1<br>© 2026 <a href="https://www.linkedin.com/in/michele-basilici-98a353269/" target="_blank" rel="noopener noreferrer">Michele Basilici</a></div>
 </aside>
 <section class="content">
 <header class="topbar">
@@ -210,7 +210,7 @@ function renderAbout(){document.getElementById('page-about').innerHTML=`
       <div class="about-mark">MM</div>
       <div class="about-kicker">Piattaforma di gestione tornei</div>
       <h2>Memorial Manager</h2>
-      <div class="about-version">Versione 1.1.0</div>
+      <div class="about-version">Versione 1.1.1</div>
       <div class="about-divider"></div>
       <p>Software progettato e sviluppato da</p>
       <a class="about-author" href="https://www.linkedin.com/in/michele-basilici-98a353269/" target="_blank" rel="noopener noreferrer">Michele Basilici</a>
@@ -383,6 +383,14 @@ const SyncManager={
     return session;
   },
 
+  async waitForSaveIdle(timeoutMs=10000){
+    const started=Date.now();
+    while(this.isSaving){
+      if(Date.now()-started>timeoutMs)throw new Error('Timeout durante il salvataggio online');
+      await new Promise(resolve=>setTimeout(resolve,80));
+    }
+  },
+
   scheduleSave(){
     if(this.isLoading||this.isPublishing)return;
     clearTimeout(this.saveTimer);
@@ -480,11 +488,13 @@ const SyncManager={
     if(!session){toast('Accedi per pubblicare online');openAuthModal();return}
 
     clearTimeout(this.saveTimer);
+    this.saveTimer=null;
     this.isPublishing=true;
     this.setBadge('Pubblicazione…');
     const buttons=[...document.querySelectorAll('[onclick="publishOnline()"]')];
     buttons.forEach(b=>b.disabled=true);
     try{
+      await this.waitForSaveIdle();
       const saved=await this.saveNow({silent:false});
       if(!saved)throw new Error('Salvataggio del progetto non riuscito');
 
