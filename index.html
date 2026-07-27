@@ -354,6 +354,7 @@ const SyncManager={
   saveTimer:null,
   saveQueued:false,
   lastSavedAt:null,
+  lastError:null,
 
   setBadge(text){
     const badge=document.getElementById('saveState');
@@ -383,6 +384,14 @@ const SyncManager={
     return session;
   },
 
+  async waitForLoadIdle(timeoutMs=10000){
+    const started=Date.now();
+    while(this.isLoading){
+      if(Date.now()-started>timeoutMs)throw new Error('Timeout durante il caricamento online');
+      await new Promise(resolve=>setTimeout(resolve,80));
+    }
+  },
+
   async waitForSaveIdle(timeoutMs=10000){
     const started=Date.now();
     while(this.isSaving){
@@ -397,11 +406,11 @@ const SyncManager={
     this.saveTimer=setTimeout(()=>this.saveNow({silent:true}),ADMIN_AUTOSAVE_DELAY);
   },
 
-  async saveNow({silent=false}={}){
-    if(this.isLoading)return false;
+  async saveNow({silent=false,allowDuringLoad=false}={}){
+    if(this.isLoading&&!allowDuringLoad){this.lastError=new Error('Caricamento del progetto ancora in corso');return false}
     const session=await this.getSession();
-    if(!session)return false;
-    if(this.isSaving){this.saveQueued=true;return false}
+    if(!session){this.lastError=new Error('Sessione scaduta o non disponibile');return false}
+    if(this.isSaving){this.saveQueued=true;this.lastError=new Error('Salvataggio gia in corso');return false}
 
     this.isSaving=true;
     this.setBadge('Salvataggio online…');
@@ -414,6 +423,7 @@ const SyncManager={
       },{onConflict:'id'});
       if(error)throw error;
 
+      this.lastError=null;
       state.updatedAt=payload.updatedAt;
       await dbSave();
       this.lastSavedAt=payload.updatedAt;
@@ -422,6 +432,7 @@ const SyncManager={
       setTimeout(()=>this.setBadge('Salvataggio automatico'),1300);
       return true;
     }catch(error){
+      this.lastError=error;
       this.setBadge('Errore salvataggio');
       if(!silent)toast('Errore salvataggio progetto online: '+error.message);
       return false;
@@ -460,11 +471,13 @@ const SyncManager={
           updateAdminSyncUI();
           toast('Progetto online caricato');
         }else{
-          await this.saveNow({silent:false});
+          const ok=await this.saveNow({silent:false,allowDuringLoad:true});
+          if(!ok)throw (this.lastError||new Error('Salvataggio della versione locale non riuscito'));
           toast('Mantenuta la versione locale più recente');
         }
       }else if(this.hasMeaningfulProject(state)){
-        await this.saveNow({silent:false});
+        const ok=await this.saveNow({silent:false,allowDuringLoad:true});
+        if(!ok)throw (this.lastError||new Error('Inizializzazione del progetto online non riuscita'));
         toast('Progetto inizializzato online');
       }else{
         toast('Progetto online non ancora inizializzato.');
@@ -489,6 +502,7 @@ const SyncManager={
 
     clearTimeout(this.saveTimer);
     this.saveTimer=null;
+    try{await this.waitForLoadIdle()}catch(error){toast('Errore pubblicazione: '+error.message);return}
     this.isPublishing=true;
     this.setBadge('Pubblicazione…');
     const buttons=[...document.querySelectorAll('[onclick="publishOnline()"]')];
@@ -496,7 +510,7 @@ const SyncManager={
     try{
       await this.waitForSaveIdle();
       const saved=await this.saveNow({silent:false});
-      if(!saved)throw new Error('Salvataggio del progetto non riuscito');
+      if(!saved)throw (this.lastError||new Error('Salvataggio del progetto non riuscito'));
 
       const payload=this.cloneState();
       payload.teams=(payload.teams||[]).map(t=>({...t,img:''}));
